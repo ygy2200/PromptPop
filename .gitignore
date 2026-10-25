@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+build*/
+build_*/
+dist*/
+*.exe
+*.exe.bak-*
+*.bak-v*
+publish_promptpop.py
+crash.log
