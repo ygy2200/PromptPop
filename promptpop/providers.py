@@ -66,14 +66,23 @@ def remove_custom_provider(cfg_data: dict, pid: str):
         c for c in lst if (c.get("id") or c.get("name")) != pid]
 
 
+def _global_key(cfg_data: dict, provider_id: str) -> str:
+    """从全局 api_keys 取 Key；字段被手改成非 dict（scalar/list）时返回空串——
+    崩了会打断 _run_worker 主路径（实测 AttributeError）。"""
+    keys = (cfg_data or {}).get("api_keys")
+    if not isinstance(keys, dict):
+        return ""
+    v = keys.get(provider_id, "")
+    return v if isinstance(v, str) else str(v or "")
+
+
 def resolve(provider_id: str, cfg_data: dict):
     """返回 (base_url, api_key, model, needs_key)。支持自定义端点。"""
     p = get_all_providers(cfg_data).get(provider_id, PROVIDERS["deepseek"])
     if p.get("custom"):
         base_url = p["base_url"]
         # 自定义端点的 Key 优先取专属字段，其次取全局 api_keys（便于复用钥匙串）
-        api_key = (p.get("api_key")
-                   or (cfg_data.get("api_keys", {}) or {}).get(provider_id, ""))
+        api_key = (p.get("api_key") or _global_key(cfg_data, provider_id))
         model = cfg_data.get("model") or p["default_model"]
         return base_url, api_key, model, p["needs_key"]
     if provider_id == "ollama":
@@ -81,6 +90,6 @@ def resolve(provider_id: str, cfg_data: dict):
         api_key = "ollama"  # 本地服务忽略；SDK 要求非空
     else:
         base_url = p["base_url"]
-        api_key = (cfg_data.get("api_keys", {}) or {}).get(provider_id, "")
+        api_key = _global_key(cfg_data, provider_id)
     model = cfg_data.get("model") or p["default_model"]
     return base_url, api_key, model, p["needs_key"]

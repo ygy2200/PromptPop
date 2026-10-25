@@ -75,11 +75,16 @@ def has_key(provider):
 
 
 def resolve_api_key(cfg_data, provider):
-    """keyring 优先，回退 config 明文（兼容未迁移/无 keyring 环境）。"""
+    """keyring 优先，回退 config 明文（兼容未迁移/无 keyring 环境）。
+    api_keys 被手改成非 dict 时不崩（与 providers._global_key 同防御）。"""
     k = get_key(provider)
     if k:
         return k
-    return (cfg_data.get("api_keys", {}) or {}).get(provider, "")
+    keys = (cfg_data or {}).get("api_keys")
+    if not isinstance(keys, dict):
+        return ""
+    v = keys.get(provider, "")
+    return v if isinstance(v, str) else ""   # 值非 str（list 等）按坏值处理
 
 
 def migrate_plaintext_to_keyring(cfg):

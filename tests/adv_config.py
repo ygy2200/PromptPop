@@ -69,6 +69,27 @@ def test_migrate_hostile_values():
     assert migrate(out) == out
 
 
+def test_api_keys_hostile_types():
+    """第八轮 R11/R12：api_keys 被手改成 scalar/list/int 时
+    resolve/resolve_api_key 曾抛 AttributeError（_run_worker 主路径）。
+    keyring 需 patch 隔离——装了 keyring 后 get_key 打真实凭据管理器，
+    残留状态会让断言取决于系统而非代码。"""
+    from unittest import mock as _mock
+    from promptpop import providers, secrets
+    with _mock.patch.object(secrets, "get_key", return_value=""):
+        for bad in ("scalar", ["l"], 42, None, {"deepseek": None}, {"deepseek": ["x"]}):
+            base, key, model, needs = providers.resolve("deepseek", {"api_keys": bad})
+            assert base == "https://api.deepseek.com" and needs is True
+            assert isinstance(key, str)
+            assert secrets.resolve_api_key({"api_keys": bad}, "deepseek") == ""
+        # 正常路径不回归
+        assert providers.resolve("deepseek", {"api_keys": {"deepseek": "sk-x"}})[1] == "sk-x"
+        # 自定义端点走全局 Key 兜底同样防御
+        cfg = {"custom_providers": [{"id": "EP", "base_url": "http://e/v1"}],
+               "api_keys": "garbage"}
+        assert providers.resolve("EP", cfg)[1] == ""
+
+
 def test_migrate_full_matrix():
     """R18 矩阵攻击：DEFAULT_CONFIG 每字段 × 10 种坏值 = 310 组合，
     migrate 必须全部不崩（坐实后固化防回归）。"""

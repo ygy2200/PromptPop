@@ -18,7 +18,12 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=[
+        # 与 onefile spec 同步（大脑记忆#198：扫入无关重库致构建极慢/臃肿）
+        'sklearn', 'scipy', 'matplotlib', 'sympy', 'PIL', 'pandas', 'numpy',
+        'torch', 'torchvision', 'cv2', 'IPython', 'tkinter',
+        'PyQt5', 'PyQt6', 'PySide2',
+    ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
@@ -33,7 +38,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,   # UPX 压坏 Qt DLL（记忆#123），与 onefile spec 同步
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -46,7 +51,7 @@ exe = EXE(
 coll = COLLECT(
     exe, a.binaries, a.zipfiles, a.datas,
     strip=False,
-    upx=True,
+    upx=False,   # 同上：禁 UPX
     upx_exclude=[],
     name='PromptPop',
 )
