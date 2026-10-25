@@ -18,7 +18,6 @@ from .providers import PROVIDERS, resolve, get_all_providers
 # DARK_QSS/LIGHT_QSS 已上移至 ui_util（Application 级主题）
 
 _VARIANT_MAP = {"标准": "standard", "精简": "concise", "严格": "strict"}
-_VARIANT_REV = {v: k for k, v in _VARIANT_MAP.items()}
 
 
 class _Header(QWidget):
@@ -79,7 +78,7 @@ class OverlayWindow(QWidget):
         self._models_shown_once = False # 首次显示浮窗时自动拉取一次模型列表
         self.open_settings_hook = None  # 由 app 注入：统一的「打开设置」入口
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
-        self.setMinimumWidth(660)
+        self.setMinimumWidth(560)   # 简化版式收窄（原 660）
         self._build()
         self._sync_from_config()
         self.apply_theme()
@@ -101,8 +100,6 @@ class OverlayWindow(QWidget):
         h.setContentsMargins(0, 0, 0, 0)
         title = QLabel("✨ PromptPop")
         title.setObjectName("title")
-        self.mode_box = QComboBox()
-        self.mode_box.addItems(["优化用户指令", "优化系统提示词"])
         self.btn_library = QPushButton("库")
         self.btn_library.setFlat(True)
         self.btn_settings = QPushButton("设置")
@@ -110,9 +107,31 @@ class OverlayWindow(QWidget):
         self.btn_close = QPushButton("✕")
         self.btn_close.setFlat(True)
         self.btn_close.setFixedWidth(30)
+        # ⚙ 高级菜单：模式/风格（低频下拉收进来，标题栏只留 库/设置/✕）
+        self.btn_advanced = QPushButton("⚙")
+        self.btn_advanced.setFlat(True)
+        self.btn_advanced.setFixedWidth(30)
+        self.btn_advanced.setToolTip("优化模式 / 风格变体 / 附加约束")
+        from PySide6.QtWidgets import QMenu
+        self._advanced_menu = QMenu(self)
+        self._mode_group = self._advanced_menu.addAction("优化用户指令")
+        self._mode_group.setCheckable(True)
+        self._mode_sys = self._advanced_menu.addAction("优化系统提示词")
+        self._mode_sys.setCheckable(True)
+        self._advanced_menu.addSeparator()
+        self._variant_acts = {}
+        for vlabel in _VARIANT_MAP:
+            act = self._advanced_menu.addAction("风格：%s" % vlabel)
+            act.setCheckable(True)
+            act.setData(_VARIANT_MAP[vlabel])
+            self._variant_acts[_VARIANT_MAP[vlabel]] = act
+        self._advanced_menu.addSeparator()
+        self._act_extra = self._advanced_menu.addAction("显示附加约束输入框")
+        self._act_extra.setCheckable(True)
+        self.btn_advanced.setMenu(self._advanced_menu)
         h.addWidget(title)
         h.addStretch(1)
-        h.addWidget(self.mode_box)
+        h.addWidget(self.btn_advanced)
         h.addWidget(self.btn_library)
         h.addWidget(self.btn_settings)
         h.addWidget(self.btn_close)
@@ -124,15 +143,16 @@ class OverlayWindow(QWidget):
             "（或选中文字自动弹工具条 / 按热键唤起并预填剪贴板）")
         self.input_box.setFixedHeight(104)
         root.addWidget(self.input_box)
-        # 附加约束（受众/语言/排除项等，随优化/迭代请求一并交给模型——
-        # meta_prompt 的 context 维度此前只有 API 入口，UI 不可达）。
-        # 注意：两个控件各自直挂 root，不套 QHBoxLayout 子布局——
+        # 附加约束（受众/语言/排除项等，随优化/迭代请求一并交给模型）。
+        # 默认隐藏（低频），⚙ 菜单「显示附加约束输入框」切换——避免常驻空框占行。
+        # 注意：控件直挂 root，不套 QHBoxLayout 子布局——
         # 嵌套子布局在本机 offscreen 测试下稳定触发 0xC0000005（连跑 12 次全崩，
         # 直挂后 6/6 通过），真机不受影响，但测试环境必须能跑。
         self.extra_edit = QLineEdit()
         self.extra_edit.setPlaceholderText(
             "附加约束（可空）：如「受众是初学者」「用英文输出」「不要代码示例」")
         self.extra_edit.setMaxLength(2000)   # 硬上限防呆：附注不该喧宾夺主
+        self.extra_edit.setVisible(False)
         root.addWidget(self.extra_edit, 1)
         # 实时字数提示：逼近/超过「单条输入上限」时变黄/变红（提交时仍会拦截）
         self.input_count = QLabel("")
@@ -152,8 +172,6 @@ class OverlayWindow(QWidget):
         self.btn_fetch_models = QPushButton("⟳")
         self.btn_fetch_models.setToolTip("拉取可用模型")
         self.btn_fetch_models.setFixedWidth(28)
-        self.variant_box = QComboBox()
-        self.variant_box.addItems(list(_VARIANT_MAP.keys()))
         self.btn_cancel = QPushButton("取消")
         self.btn_cancel.setVisible(False)
         row.addWidget(self.btn_optimize)
@@ -163,7 +181,6 @@ class OverlayWindow(QWidget):
         row.addWidget(self.model_box, 1)
         row.addWidget(self.btn_fetch_models)
         row.addWidget(QLabel("风格"))
-        row.addWidget(self.variant_box)
         row.addWidget(self.btn_cancel)
         root.addLayout(row)
 
@@ -197,24 +214,29 @@ class OverlayWindow(QWidget):
         arow.addStretch(1)
         self.btn_copy = QPushButton("复制")
         self.btn_replace = QPushButton("替换 Replace")
-        self.btn_insert = QPushButton("插入 Insert")
-        self.btn_ab = QPushButton("评估 A/B")
-        self.btn_template = QPushButton("存为模板")
-        self.btn_regen = QPushButton("重新生成")
-        self.btn_clear = QPushButton("清空")
-        self.btn_local = QPushButton("本地整理")
-        self.btn_local.setToolTip("不调用 LLM 的纯本地文本整理（无需 API Key、零成本）")
-        for b in (self.btn_copy, self.btn_replace, self.btn_insert,
-                  self.btn_ab, self.btn_template):
-            b.setEnabled(False)
+        self.btn_copy.setEnabled(False)
+        self.btn_replace.setEnabled(False)
         arow.addWidget(self.btn_copy)
         arow.addWidget(self.btn_replace)
-        arow.addWidget(self.btn_insert)
-        arow.addWidget(self.btn_ab)
-        arow.addWidget(self.btn_template)
-        arow.addWidget(self.btn_local)
-        arow.addWidget(self.btn_regen)
-        arow.addWidget(self.btn_clear)
+        # 低频动作收进「⋯」菜单（插入/评估/存模板/本地整理/重新生成/清空）：
+        # 底部常驻按钮 8→2，高频路径（复制/替换）一屏直达；键盘快捷键不变
+        from PySide6.QtWidgets import QMenu as _QMenu
+        self.btn_more = QPushButton("⋯")
+        self.btn_more.setFixedWidth(34)
+        self.btn_more.setToolTip("插入 · 评估 A/B · 存为模板 · 本地整理 · 重新生成 · 清空\n（快捷键 Ctrl+I / Ctrl+D / Ctrl+R 均保留）")
+        self._more_menu = _QMenu(self)
+        self.btn_more.setMenu(self._more_menu)
+        self._more_acts = {
+            "insert": self._more_menu.addAction("插入 Insert\tCtrl+I"),
+            "ab": self._more_menu.addAction("评估 A/B"),
+            "template": self._more_menu.addAction("存为模板"),
+            "local": self._more_menu.addAction("本地整理（无需 Key）"),
+            "regen": self._more_menu.addAction("重新生成\tCtrl+Enter"),
+            "clear": self._more_menu.addAction("清空"),
+        }
+        for a in self._more_acts.values():
+            a.setEnabled(False)
+        arow.addWidget(self.btn_more)
         root.addLayout(arow)
 
         # 信号
@@ -222,15 +244,15 @@ class OverlayWindow(QWidget):
         self.btn_cancel.clicked.connect(self._on_cancel)
         self.btn_copy.clicked.connect(self._on_copy)
         self.btn_replace.clicked.connect(self._on_replace)
-        self.btn_insert.clicked.connect(self._on_insert)
-        self.btn_ab.clicked.connect(self._on_ab)
-        self.btn_local.clicked.connect(self._on_local_tools)
-        self.btn_template.clicked.connect(self._on_save_template)
-        self.btn_regen.clicked.connect(self._on_regenerate)
+        self._more_acts["insert"].triggered.connect(self._on_insert)
+        self._more_acts["ab"].triggered.connect(self._on_ab)
+        self._more_acts["local"].triggered.connect(self._on_local_tools)
+        self._more_acts["template"].triggered.connect(self._on_save_template)
+        self._more_acts["regen"].triggered.connect(self._on_regenerate)
+        self._more_acts["clear"].triggered.connect(self._on_clear)
         # lambda 包一层：clicked(bool) 的 checked 会误入 silent 形参
         # （当前 False 恰好等价 silent=False，按钮若设 checkable 即成陷阱）
         self.btn_fetch_models.clicked.connect(lambda: self._on_fetch_models())
-        self.btn_clear.clicked.connect(self._on_clear)
         self.btn_close.clicked.connect(self.hide)
         self.input_box.textChanged.connect(self._update_input_count)
         self.btn_settings.clicked.connect(self._on_settings)
@@ -239,9 +261,12 @@ class OverlayWindow(QWidget):
         self.iter_edit.returnPressed.connect(self._on_iterate)
         self.iter_edit.textChanged.connect(self._update_iter_count)
         self.provider_box.currentIndexChanged.connect(self._on_provider_changed)
-        self.mode_box.currentIndexChanged.connect(self._on_mode_changed)
+        self._mode_group.triggered.connect(lambda: self._on_mode_menu("user"))
+        self._mode_sys.triggered.connect(lambda: self._on_mode_menu("system"))
         self.model_box.lineEdit().editingFinished.connect(self._on_model_changed)
-        self.variant_box.currentIndexChanged.connect(self._on_variant_changed)
+        for act in self._variant_acts.values():
+            act.triggered.connect(lambda _c, a=act: self._on_variant_menu(a.data()))
+        self._act_extra.toggled.connect(self.extra_edit.setVisible)
 
         self._grips = [QSizeGrip(self) for _ in range(3)]
         for gp in self._grips:
@@ -290,9 +315,12 @@ class OverlayWindow(QWidget):
             model = self.config.get("model") or get_all_providers(self.config.data).get(prov, {}).get("default_model", "")
             self.model_box.setCurrentText(model)
             self._prev_provider = prov
-            self.mode_box.setCurrentIndex(1 if self.config.get("mode") == "system" else 0)
-            self.variant_box.setCurrentText(
-                _VARIANT_REV.get(self.config.get("meta_variant", "standard"), "标准"))
+            is_sys = self.config.get("mode") == "system"
+            self._mode_group.setChecked(not is_sys)
+            self._mode_sys.setChecked(is_sys)
+            v = self.config.get("meta_variant", "standard")
+            for key, act in self._variant_acts.items():
+                act.setChecked(key == v)
         finally:
             self._suppress = False
 
@@ -315,10 +343,22 @@ class OverlayWindow(QWidget):
         # 切换 provider 后自动拉取模型列表（静默：没 Key/网络不通不打扰，保持手填）
         self._ensure_models(silent=True)
 
-    def _on_mode_changed(self):
+    def _on_mode_menu(self, mode):
+        """⚙ 菜单选模式（互斥勾选 + 落配置）。"""
+        self._mode_group.setChecked(mode == "user")
+        self._mode_sys.setChecked(mode == "system")
         if self._suppress:
             return
-        self.config.set("mode", "system" if self.mode_box.currentIndex() == 1 else "user")
+        self.config.set("mode", mode)
+        self.config.save()
+
+    def _on_variant_menu(self, variant):
+        """⚙ 菜单选风格变体（互斥勾选 + 落配置）。"""
+        for key, act in self._variant_acts.items():
+            act.setChecked(key == variant)
+        if self._suppress:
+            return
+        self.config.set("meta_variant", variant)
         self.config.save()
 
     def _on_model_changed(self):
@@ -333,10 +373,13 @@ class OverlayWindow(QWidget):
 
     # ---------- 优化 / 迭代 / 评估 ----------
     def _current_mode(self):
-        return "system" if self.mode_box.currentIndex() == 1 else "user"
+        return "system" if self._mode_sys.isChecked() else "user"
 
     def _variant(self):
-        return _VARIANT_MAP.get(self.variant_box.currentText(), "standard")
+        for key, act in self._variant_acts.items():
+            if act.isChecked():
+                return key
+        return "standard"
 
     def _run_worker(self, messages, status_msg, kind, hist_input, mode):
         if self.worker and self.worker.isRunning():
@@ -510,9 +553,10 @@ class OverlayWindow(QWidget):
                 return
             out = preview.toPlainText()
             self.result_box.setPlainText(out)
-            for b in (self.btn_copy, self.btn_replace, self.btn_insert,
-                      self.btn_ab, self.btn_template):
+            for b in (self.btn_copy, self.btn_replace):
                 b.setEnabled(True)
+            for a in self._more_acts.values():
+                a.setEnabled(True)
             self.iter_row.setVisible(True)
             self._status("已应用本地动作：%s（未调用 LLM，零成本）" % state["name"], "ok")
             dlg.accept()
@@ -752,9 +796,10 @@ class OverlayWindow(QWidget):
         self.iter_edit.clear()
         self.extra_edit.clear()
         self.iter_row.setVisible(False)
-        for b in (self.btn_copy, self.btn_replace, self.btn_insert,
-                  self.btn_ab, self.btn_template):
-            b.setEnabled(False)
+        for b in (self.btn_copy, self.btn_replace):
+            b.setEnabled(True)
+        for a in self._more_acts.values():
+            a.setEnabled(True)
         self._status("已清空")
 
     def _open_modal(self, dlg):
@@ -813,9 +858,10 @@ class OverlayWindow(QWidget):
                 self._status("已从库加载")
         if out:
             self.result_box.setPlainText(out)
-            for b in (self.btn_copy, self.btn_replace, self.btn_insert,
-                      self.btn_ab, self.btn_template):
+            for b in (self.btn_copy, self.btn_replace):
                 b.setEnabled(True)
+            for a in self._more_acts.values():
+                a.setEnabled(True)
             self.iter_row.setVisible(True)
         if not inp:
             self._status("已从库加载")
@@ -868,13 +914,14 @@ class OverlayWindow(QWidget):
         self.btn_cancel.setVisible(busy)
         self.btn_copy.setEnabled(not busy and has_result)
         self.btn_replace.setEnabled(not busy and has_result)
-        self.btn_insert.setEnabled(not busy and has_result)
-        self.btn_ab.setEnabled(not busy and has_result)
-        self.btn_template.setEnabled(not busy and has_result)
+        self._more_acts["insert"].setEnabled(not busy and has_result)
+        self._more_acts["ab"].setEnabled(not busy and has_result)
+        self._more_acts["template"].setEnabled(not busy and has_result)
+        self._more_acts["local"].setEnabled(not busy)
         self.btn_iterate.setEnabled(not busy and has_result)
         # 生成中禁用「重新生成」「清空」：否则会把正在流式输出的结果清掉
-        self.btn_regen.setEnabled(not busy)
-        self.btn_clear.setEnabled(not busy)
+        self._more_acts["regen"].setEnabled(not busy)
+        self._more_acts["clear"].setEnabled(not busy)
 
     def _status(self, msg, kind="info"):
         self.status.setText(msg)

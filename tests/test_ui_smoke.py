@@ -12,6 +12,7 @@
 """
 import os
 import sys
+import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -50,12 +51,38 @@ class _NoopAutostart:
 _settings_mod.autostart = _NoopAutostart
 
 
+# 测试隔离：ModelFetcher 整体替换为假类——任何路径（⟳ 点击/首次显示自动拉取）
+# 都不发出真实网络请求（离屏下网络线程在退出时仍 running → qFatal abort；
+# 2026-10-25 实测：即使配置无 Key，list_models 也会出网拿 401）
+import promptpop.overlay as _overlay_mod
+from PySide6.QtCore import QThread as _QThread, Signal as _Signal
+
+
+class _FakeModelFetcher(_QThread):
+    done = _Signal(list)
+
+    def __init__(self, *a, **kw):
+        super().__init__()
+
+    def run(self):
+        self.done.emit([])
+
+
+_overlay_mod.ModelFetcher = _FakeModelFetcher
+
+
 def _app():
     return QApplication.instance() or QApplication([])
 
 
+_TEST_CFG_DIR = os.path.join(tempfile.mkdtemp(prefix="promptpop_ui_smoke_"), "")
+os.environ["PROMPTPOP_CONFIG_DIR"] = _TEST_CFG_DIR   # 隔离：无 Key → show_at_cursor
+# 不会自动拉模型（ModelFetcher 发真实网络请求，退出时线程未完 → abort；
+# 2026-10-25 实测定位：唯一未隔离配置目录的测试文件，曾用真实 Key 出网）
+
+
 def _cfg():
-    # 不写盘：只用于构造 UI
+    # 不写盘：只用于构造 UI（读隔离目录）
     return Config.load()
 
 
@@ -111,6 +138,8 @@ def test_buttons_are_wired():
     # 允许「当前不可用」的按钮（enabled=False），但不允许「点了没反应」
     skip_when_disabled = True
     for b in _all_buttons(ov):
+        if b.menu() is not None:
+            continue  # 菜单按钮（⚙ 高级 / ⋯ 更多）：点击=弹菜单，动作在 QMenu action 上
         n = _click_receivers(b)
         if skip_when_disabled and not b.isEnabled():
             continue  # 置灰的按钮（如未出结果时的复制/替换）不算缺陷

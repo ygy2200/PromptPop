@@ -2,4 +2,4 @@
 
 __version__ 为运行时唯一版本来源；version_info.py（PyInstaller spec 用）需手动同步。
 """
-__version__ = "0.7.11"
+__version__ = "0.7.12"
